@@ -1,73 +1,166 @@
-# React + TypeScript + Vite
+# Smart Travel Planning and Recommendation System
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+## Project Overview
+The **Smart Travel Planning and Recommendation System** is a full-stack web application that helps users explore and plan trips by discovering **hotels, restaurants, and tourist attractions** in different cities.
 
-Currently, two official plugins are available:
+Users can search for a city and view travel-related information such as ratings, reviews, and recommendations. The system also allows users to save favorite places and create trip itineraries.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+This project demonstrates the practical implementation of **Database Management System (DBMS) concepts** such as ER modeling, relational schema design, SQL queries, joins, constraints, and data analytics.
 
-## React Compiler
+---
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Features
 
-## Expanding the ESLint configuration
+### User Management
+- User registration and login
+- User profile management
+- Store user preferences
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+### City-Based Search
+- Search for a city
+- View hotels, restaurants, and tourist attractions
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+### Ratings and Reviews
+- Users can rate places
+- Write reviews
+- View average ratings
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+### Favorites / Wishlist
+- Save places for future visits
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+### Trip Planner
+- Create travel plans
+- Add places to itinerary
+
+### Recommendation System
+- Suggest places based on ratings and user preferences
+
+### Popularity & Trend Analytics
+- Most searched cities
+- Most popular attractions
+- Top-rated restaurants
+
+### Budget-Based Filtering
+- Filter places based on ratings, category, and budget
+
+---
+
+## Tech Stack
+
+### Frontend
+- React.js
+- HTML
+- CSS
+- JavaScript
+
+### Backend
+- Node.js
+- Express.js
+
+### Database
+- MySQL
+
+### APIs (Optional)
+- Travel data APIs via RapidAPI
+
+---
+
+## System Architecture
+
+User → React Frontend → Node.js/Express Backend → MySQL Database → External APIs
+
+The frontend sends requests to the backend API.  
+The backend processes the request, interacts with the MySQL database, and returns the required data.
+
+---
+
+## Database Concepts Used
+
+This project demonstrates several important DBMS concepts:
+
+- Entity Relationship (ER) Modeling
+- Relational Schema Design
+- Primary Keys and Foreign Keys
+- One-to-Many Relationships
+- Many-to-Many Relationships
+- SQL Joins
+- Aggregate Functions (`AVG`, `COUNT`)
+- Group By and Filtering Queries
+- Data Integrity Constraints
+
+---
+
+## Project Structure
+
+```
+project-root
+│
+├── frontend
+│   ├── src
+│   ├── components
+│   └── pages
+│
+├── backend
+│   ├── routes
+│   ├── controllers
+│   ├── models
+│   └── server.js
+│
+├── database
+│   └── schema.sql
+│
+└── README.md
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+---
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Installation and Setup
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/yourusername/project-name.git
 ```
+
+### 2. Install Dependencies
+
+Frontend
+
+```bash
+cd frontend
+npm install
+```
+
+Backend
+
+```bash
+cd backend
+npm install
+```
+
+### 3. Setup MySQL Database
+
+Create a MySQL database:
+
+```sql
+CREATE DATABASE travel_planner;
+```
+
+Update the database configuration in the backend.
+
+### 4. Run the Application
+
+Start backend server:
+
+```bash
+npm start
+```
+
+Start frontend:
+
+```bash
+npm start
+```
+
+---
+
