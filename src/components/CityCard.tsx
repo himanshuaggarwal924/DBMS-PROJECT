@@ -1,6 +1,8 @@
 import { Link } from "wouter";
 import type { City } from "@workspace/api-client-react";
 import { ArrowUpRight, Star } from "lucide-react";
+import SmartImage from "@/components/SmartImage";
+import { getCityImageSources } from "@/lib/imageUtils";
 
 interface CityCardProps {
   city: City & { averageRating?: number; reviewCount?: number };
@@ -14,6 +16,7 @@ export default function CityCard({ city, onView }: CityCardProps) {
 
   const rating = city.averageRating || 4.5;
   const reviewCount = city.reviewCount || 0;
+  const imageSources = getCityImageSources(city);
   
   // If city has an ID (from database), use it; otherwise use city name as query param
   const href = city.id && city.id > 0
@@ -24,13 +27,11 @@ export default function CityCard({ city, onView }: CityCardProps) {
     <Link href={href} className="group block h-full" onClick={handleClick}>
       <div className="relative h-64 md:h-80 w-full rounded-2xl overflow-hidden shadow-lg hover:shadow-2xl hover:-translate-y-1 transition-all duration-300">
         <div className="absolute inset-0 bg-muted">
-          {city.imageUrl && (
-            <img 
-              src={city.imageUrl} 
-              alt={city.name} 
-              className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700"
-            />
-          )}
+          <SmartImage
+            sources={imageSources}
+            alt={city.name}
+            className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700"
+          />
         </div>
         <div className="absolute inset-0 bg-linear-to-t from-black/80 via-black/30 to-transparent"></div>
         

@@ -1,44 +1,109 @@
 import { Router, type IRouter } from "express";
-import { query, insert } from "../lib/mysql";
+import type { RowDataPacket } from "mysql2";
+import { requireAuth, type AuthenticatedRequest } from "../lib/auth";
+import { execute, queryRows } from "../lib/mysql";
 
 const router: IRouter = Router();
 
-router.post("/", async (req, res) => {
+interface ReviewRow extends RowDataPacket {
+  id: number;
+  place_id: number;
+  user_id: number;
+  user_name: string;
+  rating: number | string;
+  comment?: string | null;
+  created_at: string | Date;
+}
+
+function formatReview(review: ReviewRow) {
+  return {
+    id: review.id,
+    placeId: review.place_id,
+    userId: review.user_id,
+    userName: review.user_name,
+    rating: Number(review.rating),
+    comment: review.comment || "",
+    createdAt: review.created_at,
+  };
+}
+
+router.get("/place/:placeId", async (req, res) => {
   try {
-    const { placeId, userId, rating, comment } = req.body;
-    if (!placeId || !userId || !rating) {
-      res.status(400).json({ message: "placeId, userId and rating are required" });
-      return;
-    }
-    if (rating < 1 || rating > 5) {
-      res.status(400).json({ message: "Rating must be between 1 and 5" });
+    const placeId = Number.parseInt(req.params.placeId, 10);
+    if (!Number.isFinite(placeId)) {
+      res.status(400).json({ message: "Valid placeId is required" });
       return;
     }
 
-    await insert(
-      "INSERT INTO reviews (place_id, user_id, rating, comment) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE rating = VALUES(rating), comment = VALUES(comment)",
-      [placeId, userId, rating, comment || null]
+    const rows = await queryRows<ReviewRow[]>(
+      `SELECT
+         r.id,
+         r.place_id,
+         r.user_id,
+         u.name AS user_name,
+         r.rating,
+         r.comment,
+         r.created_at
+       FROM reviews r
+       JOIN users u ON u.user_id = r.user_id
+       WHERE r.place_id = ?
+       ORDER BY r.created_at DESC`,
+      [placeId]
     );
 
-    await insert(
-      `UPDATE places SET
-        rating = (SELECT AVG(r.rating) FROM reviews r WHERE r.place_id = ?),
-        review_count = (SELECT COUNT(*) FROM reviews r WHERE r.place_id = ?)
-       WHERE id = ?`,
-      [placeId, placeId, placeId]
+    res.json(rows.map(formatReview));
+  } catch (error) {
+    console.error("List reviews error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.post("/", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { placeId, rating, comment } = req.body as {
+      placeId?: number;
+      rating?: number;
+      comment?: string;
+    };
+
+    if (!placeId || typeof rating !== "number") {
+      res.status(400).json({ message: "placeId and rating are required" });
+      return;
+    }
+
+    if (rating < 0 || rating > 5) {
+      res.status(400).json({ message: "Rating must be between 0 and 5" });
+      return;
+    }
+
+    await execute(
+      `INSERT INTO reviews (user_id, place_id, rating, comment)
+       VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         rating = VALUES(rating),
+         comment = VALUES(comment),
+         created_at = CURRENT_TIMESTAMP`,
+      [req.auth!.userId, placeId, rating, comment || null]
     );
 
-    const rows = await query(
-      `SELECT r.id, r.place_id as placeId, r.user_id as userId, u.name as userName,
-              r.rating, r.comment, r.created_at as createdAt
-       FROM reviews r JOIN users u ON u.id = r.user_id
+    const rows = await queryRows<ReviewRow[]>(
+      `SELECT
+         r.id,
+         r.place_id,
+         r.user_id,
+         u.name AS user_name,
+         r.rating,
+         r.comment,
+         r.created_at
+       FROM reviews r
+       JOIN users u ON u.user_id = r.user_id
        WHERE r.place_id = ? AND r.user_id = ?`,
-      [placeId, userId]
+      [placeId, req.auth!.userId]
     );
 
-    res.status(201).json(rows[0]);
-  } catch (err) {
-    console.error("Review error:", err);
+    res.status(201).json(rows.length ? formatReview(rows[0]) : null);
+  } catch (error) {
+    console.error("Save review error:", error);
     res.status(500).json({ message: "Server error" });
   }
 });

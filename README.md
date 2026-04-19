@@ -60,8 +60,8 @@ This project demonstrates the practical implementation of **Database Management 
 ### Database
 - MySQL
 
-### APIs (Optional)
-- Travel data APIs via RapidAPI
+### APIs
+- TripAdvisor Scraper API by Omkar Cloud
 
 ---
 
@@ -148,7 +148,21 @@ CREATE DATABASE travel_planner;
 
 Update the database configuration in the backend.
 
-### 4. Run the Application
+### 4. Configure Live API Access
+
+Create `server/.env` from `server/.env.example` and set:
+
+```bash
+TRIPADVISOR_API_KEY=your_omkar_tripadvisor_api_key_here
+TRIPADVISOR_LOCALE=en-US
+TRIPADVISOR_CURRENCY=INR
+TRIPADVISOR_MAX_PAGES=2
+```
+
+This project now uses live TripAdvisor scraper API data for cities, hotels, restaurants, attractions, details, and reviews.
+If the API key is missing or invalid, live listing endpoints will not return data.
+
+### 5. Run the Application
 
 Start backend server:
 

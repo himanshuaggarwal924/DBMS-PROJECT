@@ -1,177 +1,328 @@
 import { Router, type IRouter } from "express";
-import { query, insert } from "../lib/mysql";
-import { fetchCitiesFromRapidAPI, getCityImage, getCityInfo } from "../lib/rapidapi";
+import { optionalAuth, type AuthenticatedRequest } from "../lib/auth";
+import { getConnection, queryRows, withAdvisoryLock } from "../lib/mysql";
+import {
+  buildDistanceExpression,
+  buildPlaceFilterSql,
+  ensureCityExists,
+  ensureCityPlacesCached,
+  formatCity,
+  formatPlace,
+  getCityById,
+  logUserSearch,
+  normalizeCategoryInput,
+  type CityRow,
+  type PlaceRow,
+} from "../lib/place-utils";
 
 const router: IRouter = Router();
 
-// Helper function to normalize city data types
-function normalizeCity(city: any) {
+interface CityListRow extends CityRow {
+  total_places?: number | string | null;
+  average_rating?: number | string | null;
+  search_count?: number | string | null;
+}
+
+function toNumber(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function formatCitySummary(row: CityListRow) {
   return {
-    ...city,
-    searchCount: city.searchCount ? parseInt(city.searchCount) : 0,
+    ...formatCity(row),
+    totalPlaces: toNumber(row.total_places) ?? 0,
+    averageRating: toNumber(row.average_rating) ?? 0,
+    searchCount: toNumber(row.search_count) ?? 0,
   };
 }
 
-function normalizeCities(cities: any[]) {
-  return cities.map(normalizeCity);
+function parseNumber(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-// Helper function to normalize place data types
-function normalizePlace(place: any) {
-  return {
-    ...place,
-    rating: place.rating ? parseFloat(place.rating) : null,
-    priceLevel: place.priceLevel ? parseInt(place.priceLevel) : null,
-    cityId: place.cityId ? parseInt(place.cityId) : null,
-    reviewCount: place.reviewCount ? parseInt(place.reviewCount) : 0,
-  };
-}
-
-function normalizePlaces(places: any[]) {
-  return places.map(normalizePlace);
-}
-
-// Get all cities (from database with fallback to RapidAPI)
-router.get("/", async (req, res) => {
+router.get("/", async (_req, res) => {
   try {
-    // First try to get from database
-    let cities = await query(
-      `SELECT id, name, state, country, description, image_url as imageUrl, search_count as searchCount
-       FROM cities ORDER BY search_count DESC LIMIT 20`
+    const rows = await queryRows<CityListRow[]>(
+      `SELECT
+         city.city_id,
+         city.name,
+         city.country,
+         city.latitude,
+         city.longitude,
+         city.created_at,
+         COUNT(DISTINCT p.place_id) AS total_places,
+         AVG(p.rating) AS average_rating,
+         COUNT(DISTINCT us.id) AS search_count
+       FROM cities city
+       LEFT JOIN places p ON p.city_id = city.city_id
+       LEFT JOIN user_searches us ON us.city_id = city.city_id
+       GROUP BY city.city_id, city.name, city.country, city.latitude, city.longitude, city.created_at
+       ORDER BY city.name ASC`
     );
 
-    // If no cities in database, fetch from RapidAPI and cache
-    if (cities.length === 0) {
-      const rapidAPICities = await fetchCitiesFromRapidAPI();
-      
-      // Cache cities in database
-      for (const city of rapidAPICities.slice(0, 10)) {
-        try {
-          await insert(
-            "INSERT INTO cities (name, country, state, search_count) VALUES (?, ?, ?, ?)",
-            [city.name, city.country, city.state || null, 1]
-          );
-        } catch (_err) {
-          // Ignore duplicate key errors
-        }
-      }
-      
-      cities = await query(
-        `SELECT id, name, state, country, description, image_url as imageUrl, search_count as searchCount
-         FROM cities LIMIT 20`
-      );
-    }
-
-    res.json(normalizeCities(cities));
-  } catch (err) {
-    console.error("List cities error:", err);
+    res.json(rows.map(formatCitySummary));
+  } catch (error) {
+    console.error("List cities error:", error);
     res.status(500).json({ message: "Server error" });
   }
 });
 
-// Search cities - supports ANY city name
+router.get("/popular", async (_req, res) => {
+  try {
+    const rows = await queryRows<CityListRow[]>(
+      `SELECT
+         city.city_id,
+         city.name,
+         city.country,
+         city.latitude,
+         city.longitude,
+         city.created_at,
+         COUNT(DISTINCT p.place_id) AS total_places,
+         AVG(p.rating) AS average_rating,
+         COUNT(DISTINCT us.id) AS search_count
+       FROM cities city
+       LEFT JOIN places p ON p.city_id = city.city_id
+       LEFT JOIN user_searches us ON us.city_id = city.city_id
+       GROUP BY city.city_id, city.name, city.country, city.latitude, city.longitude, city.created_at
+       ORDER BY search_count DESC, average_rating DESC, city.name ASC
+       LIMIT 8`
+    );
+
+    res.json(rows.map(formatCitySummary));
+  } catch (error) {
+    console.error("Popular cities error:", error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 router.get("/search", async (req, res) => {
   try {
-    const q = (req.query.q as string) || "";
-    if (!q.trim()) {
+    const query = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    if (!query) {
       res.status(400).json({ message: "Query parameter q is required" });
       return;
     }
-
-    // First check database for exact/partial matches
-    let cities = await query(
-      `SELECT id, name, state, country, description, image_url as imageUrl, search_count as searchCount
-       FROM cities
-       WHERE name LIKE ? OR state LIKE ? OR country LIKE ?
-       ORDER BY search_count DESC LIMIT 10`,
-      [`%${q}%`, `%${q}%`, `%${q}%`]
-    );
-
-    // If no database matches, treat search as ANY city and generate info
-    if (cities.length === 0) {
-      // Return city info with image (for unregistered users to see preview)
-      const cityInfo = getCityInfo(q);
-      cities = [{
-        id: null,
-        name: cityInfo.name,
-        state: null,
-        country: cityInfo.country,
-        description: `Discover the wonders of ${cityInfo.name}. Hotels, restaurants, and attractions await.`,
-        imageUrl: cityInfo.imageUrl,
-        searchCount: 0,
-      }] as any;
-    } else {
-      // Update search count for database cities
-      await query(
-        "UPDATE cities SET search_count = search_count + 1 WHERE name LIKE ?",
-        [`%${q}%`]
-      ).catch(() => {}); // Ignore errors
+    if (query.length < 3) {
+      res.json([]);
+      return;
     }
 
-    // Ensure all have images
-    cities = normalizeCities(cities.map(c => ({
-      ...c,
-      imageUrl: c.imageUrl || getCityImage(c.name),
-    })));
+    // Try the full query (with stats joins) first; fall back to a plain cities
+    // lookup if user_searches or places don't exist yet.
+    let rows: CityListRow[] = [];
+    try {
+      rows = await queryRows<CityListRow[]>(
+        `SELECT
+           city.city_id,
+           city.name,
+           city.country,
+           city.latitude,
+           city.longitude,
+           city.created_at,
+           COUNT(DISTINCT p.place_id) AS total_places,
+           AVG(p.rating)              AS average_rating,
+           COUNT(DISTINCT us.id)      AS search_count
+         FROM cities city
+         LEFT JOIN places p          ON p.city_id  = city.city_id
+         LEFT JOIN user_searches us  ON us.city_id = city.city_id
+         WHERE city.name LIKE ?
+         GROUP BY city.city_id, city.name, city.country, city.latitude, city.longitude, city.created_at
+         ORDER BY city.name ASC
+         LIMIT 12`,
+        [`%${query}%`]
+      );
+    } catch (sqlErr) {
+      // Graceful degradation: stats join failed (e.g. table not yet created).
+      // Try a minimal fallback query so the search still works.
+      console.warn("[Search] Full query failed, trying fallback:", sqlErr instanceof Error ? sqlErr.message : sqlErr);
+      try {
+        rows = await queryRows<CityListRow[]>(
+          `SELECT city_id, name, country, latitude, longitude, created_at
+           FROM cities
+           WHERE name LIKE ?
+           ORDER BY name ASC
+           LIMIT 12`,
+          [`%${query}%`]
+        );
+      } catch (fallbackErr) {
+        console.error("[Search] Fallback query also failed:", fallbackErr);
+        throw fallbackErr; // re-throw so the outer catch returns 500
+      }
+    }
 
-    res.json(cities);
-  } catch (err) {
-    console.error("City search error:", err);
+    if (rows.length === 0) {
+      // City not cached — pull from RapidAPI and persist it
+      try {
+        const city = await withAdvisoryLock(
+          `city_search_${query.toLowerCase().slice(0, 60)}`,
+          30,
+          () => ensureCityExists(query)
+        );
+        rows = [city];
+      } catch (ensureErr) {
+        console.error("[Search] ensureCityExists failed:", ensureErr instanceof Error ? ensureErr.message : ensureErr);
+        // Return empty rather than 500 so the UI shows "No destinations found"
+        res.json([]);
+        return;
+      }
+    }
+
+    res.json(rows.map(formatCitySummary));
+  } catch (error) {
+    console.error("Search cities error:", error);
     res.status(500).json({ message: "Server error" });
   }
 });
 
-// Get popular cities (most searched)
-router.get("/popular", async (req, res) => {
+router.get("/:cityId/places", optionalAuth, async (req: AuthenticatedRequest, res) => {
   try {
-    let cities = await query(
-      `SELECT id, name, state, country, description, image_url as imageUrl, search_count as searchCount
-       FROM cities ORDER BY search_count DESC LIMIT 8`
-    );
-
-    // If no popular cities, fetch from RapidAPI
-    if (cities.length === 0) {
-      const rapidAPICities = await fetchCitiesFromRapidAPI();
-      cities = rapidAPICities.slice(0, 8) as unknown as any[];
+    const cityId = Number.parseInt(req.params.cityId, 10);
+    if (!Number.isFinite(cityId)) {
+      res.status(400).json({ message: "Valid cityId is required" });
+      return;
     }
 
-    res.json(normalizeCities(cities));
-  } catch (err) {
-    console.error("Get popular cities error:", err);
+    const city = await getCityById(cityId);
+    if (!city) {
+      res.status(404).json({ message: "City not found" });
+      return;
+    }
+
+    const source = await withAdvisoryLock(
+      `city_places_${cityId}`,
+      30,
+      () => ensureCityPlacesCached(city)
+    );
+
+    const filters = {
+      category: normalizeCategoryInput(req.query.category),
+      minRating: parseNumber(req.query.minRating),
+      minCost: parseNumber(req.query.minCost ?? req.query.minBudget),
+      maxCost: parseNumber(req.query.maxCost ?? req.query.maxBudget),
+    };
+
+    const sortBy = typeof req.query.sortBy === "string" ? req.query.sortBy.toLowerCase() : "rating";
+    const refLat = parseNumber(req.query.refLat);
+    const refLng = parseNumber(req.query.refLng);
+
+    const distanceExpression = buildDistanceExpression("p.latitude", "p.longitude");
+    const includeDistance = sortBy === "distance" && typeof refLat === "number" && typeof refLng === "number";
+
+    const { clauses, params } = buildPlaceFilterSql(filters);
+    const queryParams = includeDistance
+      ? [refLat!, refLng!, refLat!, ...(req.auth?.userId ? [req.auth.userId] : []), cityId, ...params]
+      : [...(req.auth?.userId ? [req.auth.userId] : []), cityId, ...params];
+
+    const favoriteSelect = req.auth?.userId ? "CASE WHEN f.id IS NULL THEN 0 ELSE 1 END AS is_favorite" : "0 AS is_favorite";
+    const favoriteJoin = req.auth?.userId ? "LEFT JOIN favorites f ON f.place_id = p.place_id AND f.user_id = ?" : "";
+
+    const rows = await queryRows<PlaceRow[]>(
+      `SELECT
+         p.place_id,
+         p.name,
+         p.avg_cost,
+         p.rating,
+         p.latitude,
+         p.longitude,
+         p.city_id,
+         city.name AS city_name,
+         city.country,
+         c.name AS category_name,
+         p.api_place_id,
+         p.popularity_score,
+         p.description,
+         p.address,
+         p.image_url,
+         ${includeDistance ? `${distanceExpression} AS distance_km,` : "NULL AS distance_km,"}
+         ${favoriteSelect}
+       FROM places p
+       JOIN cities city ON city.city_id = p.city_id
+       JOIN categories c ON c.category_id = p.category_id
+       ${favoriteJoin}
+       WHERE p.city_id = ?
+       ${clauses.length ? `AND ${clauses.join(" AND ")}` : ""}
+       ORDER BY ${
+         includeDistance
+           ? "distance_km ASC, ISNULL(p.rating) ASC, p.rating DESC"
+           : "ISNULL(p.rating) ASC, p.rating DESC, p.popularity_score DESC, p.place_id DESC"
+       }`,
+      queryParams
+    );
+
+    await logUserSearch(city.city_id, req.auth?.userId || null, {
+      category: filters.category ?? null,
+      minRating: filters.minRating ?? null,
+      minCost: filters.minCost ?? null,
+      maxCost: filters.maxCost ?? null,
+      sortBy,
+      refLat: refLat ?? null,
+      refLng: refLng ?? null,
+    });
+
+    res.json({
+      city: formatCity(city),
+      source,
+      places: rows.map(formatPlace),
+    });
+  } catch (error) {
+    console.error("City places error:", error);
     res.status(500).json({ message: "Server error" });
   }
 });
 
-// Get places in a city
-router.get("/:cityId/places", async (req, res) => {
+interface BestValueRow {
+  place_id: number;
+  name: string;
+  rating: number | string;
+  avg_cost: number | string;
+  category_name: string;
+  city_name: string;
+  value_score: number | string;
+}
+
+router.get("/:cityId/best-value", async (req, res) => {
   try {
-    const cityId = parseInt(req.params.cityId);
-    const { category, minRating, maxBudget } = req.query;
-    let sql = `
-      SELECT p.id, p.city_id as cityId, c.name as cityName, p.name, p.category,
-             p.description, p.address, p.rating, p.price_level as priceLevel,
-             p.image_url as imageUrl, p.tags, p.review_count as reviewCount
-      FROM places p
-      JOIN cities c ON c.id = p.city_id
-      WHERE p.city_id = ?`;
-    const params: unknown[] = [cityId];
-    if (category) {
-      sql += " AND p.category = ?";
-      params.push(category);
+    const cityId = Number.parseInt(req.params.cityId, 10);
+    const limit = Math.min(Number.parseInt(String(req.query.limit || "10"), 10) || 10, 50);
+
+    if (!Number.isFinite(cityId)) {
+      res.status(400).json({ message: "Valid cityId is required" });
+      return;
     }
-    if (minRating) {
-      sql += " AND p.rating >= ?";
-      params.push(parseFloat(minRating as string));
+
+    const conn = await getConnection();
+    try {
+      const [result] = await conn.query<never[]>("CALL GetBestValuePlaces(?, ?)", [cityId, limit]);
+      const rows = (Array.isArray(result) && Array.isArray(result[0]) ? result[0] : result) as BestValueRow[];
+
+      res.json(
+        rows.map((row) => ({
+          placeId: row.place_id,
+          name: row.name,
+          rating: toNumber(row.rating) ?? null,
+          avgCost: toNumber(row.avg_cost) ?? null,
+          category: row.category_name,
+          cityName: row.city_name,
+          valueScore: toNumber(row.value_score) ?? 0,
+        }))
+      );
+    } finally {
+      conn.release();
     }
-    if (maxBudget) {
-      sql += " AND p.price_level <= ?";
-      params.push(parseInt(maxBudget as string));
-    }
-    sql += " ORDER BY p.rating DESC";
-    const places = await query(sql, params);
-    res.json(normalizePlaces(places));
-  } catch (err) {
-    console.error("Get city places error:", err);
+  } catch (error) {
+    console.error("Best value places error:", error);
     res.status(500).json({ message: "Server error" });
   }
 });

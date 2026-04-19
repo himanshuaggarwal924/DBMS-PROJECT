@@ -1,9 +1,13 @@
-import dotenv from 'dotenv';
+import dotenv from "dotenv";
 import mysql from "mysql2/promise";
-import type { RowDataPacket, OkPacket } from "mysql2";
+import type { PoolConnection } from "mysql2/promise";
+import type { ResultSetHeader, RowDataPacket } from "mysql2";
 
-// Load environment variables immediately
+export type { PoolConnection };
+
 dotenv.config();
+
+export type SqlValue = string | number | boolean | Date | null;
 
 const pool = mysql.createPool({
   host: process.env.DB_HOST || "localhost",
@@ -17,56 +21,71 @@ const pool = mysql.createPool({
   keepAliveInitialDelay: 0,
 });
 
-// Test connection on initialization
-pool.getConnection().then(connection => {
-  connection.ping().then(() => {
-    console.log("✓ Database connection successful");
-    connection.release();
-  }).catch(err => {
-    console.error("❌ Database connection failed:", err.message);
-  });
-}).catch(err => {
-  console.error("❌ Failed to get database connection:", err.message);
-});
+export async function getConnection(): Promise<PoolConnection> {
+  return pool.getConnection();
+}
 
-export async function query<T extends RowDataPacket[] = RowDataPacket[]>(
+export async function queryRows<T extends RowDataPacket[]>(
   sql: string,
-  values?: (string | number | boolean | null | undefined | unknown)[]
+  values: SqlValue[] = []
 ): Promise<T> {
+  const [rows] = await pool.query<T>(sql, values);
+  return rows;
+}
+
+export async function queryOne<T extends RowDataPacket>(
+  sql: string,
+  values: SqlValue[] = []
+): Promise<T | null> {
+  const rows = await queryRows<T[]>(sql, values);
+  return rows[0] || null;
+}
+
+export async function execute(sql: string, values: SqlValue[] = []): Promise<ResultSetHeader> {
+  const [result] = await pool.execute<ResultSetHeader>(sql, values);
+  return result;
+}
+
+export async function closePool() {
+  await pool.end();
+}
+
+export async function withTransaction<T>(fn: (conn: PoolConnection) => Promise<T>): Promise<T> {
+  const conn = await pool.getConnection();
   try {
-    const connection = await pool.getConnection();
-    try {
-      const [results] = await connection.query<T>(sql, values);
-      return results as T;
-    } finally {
-      connection.release();
-    }
-  } catch (error) {
-    console.error("Database query error:", error);
-    throw error;
+    await conn.beginTransaction();
+    const result = await fn(conn);
+    await conn.commit();
+    return result;
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
   }
 }
 
-export async function queryOne<T extends RowDataPacket = RowDataPacket>(
-  sql: string,
-  values?: (string | number | boolean | null | undefined | unknown)[]
-): Promise<T | null> {
-  const results = await query<T[]>(sql, values);
-  return (results?.[0] as T) || null;
-}
-
-export async function insert(sql: string, values?: (string | number | boolean | null | undefined | unknown)[]): Promise<number> {
+export async function withAdvisoryLock<T>(
+  lockName: string,
+  timeoutSecs: number,
+  fn: () => Promise<T>
+): Promise<T> {
+  const conn = await pool.getConnection();
   try {
-    const connection = await pool.getConnection();
-    try {
-      const [result] = await connection.query<OkPacket>(sql, values);
-      return result.insertId;
-    } finally {
-      connection.release();
+    const [rows] = await conn.query<RowDataPacket[]>(
+      "SELECT GET_LOCK(?, ?) AS acquired",
+      [lockName, timeoutSecs]
+    );
+    if (!rows[0]?.acquired) {
+      throw new Error(`Could not acquire advisory lock: ${lockName}`);
     }
-  } catch (error) {
-    console.error("Database insert error:", error);
-    throw error;
+    try {
+      return await fn();
+    } finally {
+      await conn.query("SELECT RELEASE_LOCK(?)", [lockName]);
+    }
+  } finally {
+    conn.release();
   }
 }
 

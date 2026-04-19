@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useLoginUser } from "@workspace/api-client-react";
-import { useAuth } from "@/lib/auth";
+import { useAuth } from "@/lib/useAuthHook";
 import { Compass, ArrowRight } from "lucide-react";
 import authBg from "@/assets/auth-bg.png";
 import type { AxiosError } from "axios";

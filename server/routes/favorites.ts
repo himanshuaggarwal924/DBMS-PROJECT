@@ -1,68 +1,99 @@
 import { Router, type IRouter } from "express";
-import { query, insert } from "../lib/mysql";
+import type { RowDataPacket } from "mysql2";
+import { requireAuth, type AuthenticatedRequest } from "../lib/auth";
+import { execute, queryOne, queryRows, withTransaction } from "../lib/mysql";
+import { formatPlace, type PlaceRow } from "../lib/place-utils";
 
 const router: IRouter = Router();
 
-router.get("/", async (req, res) => {
-  try {
-    const userId = parseInt(req.query.userId as string);
-    if (!userId) {
-      res.status(400).json({ message: "userId is required" });
-      return;
-    }
+router.use(requireAuth);
 
-    const places = await query(
-      `SELECT p.id, p.city_id as cityId, c.name as cityName, p.name, p.category,
-              p.description, p.address, p.rating, p.price_level as priceLevel,
-              p.image_url as imageUrl, p.tags, p.review_count as reviewCount
+router.get("/", async (req: AuthenticatedRequest, res) => {
+  try {
+    const rows = await queryRows<PlaceRow[]>(
+      `SELECT
+         p.place_id,
+         p.name,
+         p.avg_cost,
+         p.rating,
+         p.latitude,
+         p.longitude,
+         p.city_id,
+         city.name AS city_name,
+         city.country,
+         c.name AS category_name,
+         p.api_place_id,
+         p.popularity_score,
+         p.description,
+         p.address,
+         p.image_url,
+         1 AS is_favorite
        FROM favorites f
-       JOIN places p ON p.id = f.place_id
-       JOIN cities c ON c.id = p.city_id
+       JOIN places p ON p.place_id = f.place_id
+       JOIN cities city ON city.city_id = p.city_id
+       JOIN categories c ON c.category_id = p.category_id
        WHERE f.user_id = ?
-       ORDER BY f.created_at DESC`,
-      [userId]
+       ORDER BY f.saved_at DESC`,
+      [req.auth!.userId]
     );
 
-    res.json(places);
-  } catch (err) {
-    console.error("Get favorites error:", err);
+    res.json(rows.map(formatPlace));
+  } catch (error) {
+    console.error("List favorites error:", error);
     res.status(500).json({ message: "Server error" });
   }
 });
 
-router.post("/", async (req, res) => {
+router.post("/:placeId", async (req: AuthenticatedRequest, res) => {
   try {
-    const { userId, placeId } = req.body;
-    if (!userId || !placeId) {
-      res.status(400).json({ message: "userId and placeId are required" });
+    const placeId = Number.parseInt(req.params.placeId, 10);
+    if (!Number.isFinite(placeId)) {
+      res.status(400).json({ message: "Valid placeId is required" });
       return;
     }
 
-    await insert(
+    const result = await execute(
       "INSERT IGNORE INTO favorites (user_id, place_id) VALUES (?, ?)",
-      [userId, placeId]
+      [req.auth!.userId, placeId]
+    );
+    if (result.affectedRows > 0) {
+      await withTransaction(async (conn) => {
+        await conn.execute("SELECT place_id FROM places WHERE place_id = ? FOR UPDATE", [placeId]);
+        await conn.execute(
+          "UPDATE places SET popularity_score = popularity_score + 1 WHERE place_id = ?",
+          [placeId]
+        );
+      });
+    }
+
+    const favorite = await queryOne<RowDataPacket & { id: number }>(
+      "SELECT id FROM favorites WHERE user_id = ? AND place_id = ?",
+      [req.auth!.userId, placeId]
     );
 
-    res.status(201).json({ success: true, message: "Added to favorites" });
-  } catch (err) {
-    console.error("Add favorite error:", err);
+    res.status(201).json({ success: true, id: favorite?.id || null });
+  } catch (error) {
+    console.error("Add favorite error:", error);
     res.status(500).json({ message: "Server error" });
   }
 });
 
-router.delete("/:placeId", async (req, res) => {
+router.delete("/:placeId", async (req: AuthenticatedRequest, res) => {
   try {
-    const placeId = parseInt(req.params.placeId);
-    const userId = parseInt(req.query.userId as string);
+    const placeId = Number.parseInt(req.params.placeId, 10);
+    if (!Number.isFinite(placeId)) {
+      res.status(400).json({ message: "Valid placeId is required" });
+      return;
+    }
 
-    await insert(
+    await execute(
       "DELETE FROM favorites WHERE user_id = ? AND place_id = ?",
-      [userId, placeId]
+      [req.auth!.userId, placeId]
     );
 
-    res.json({ success: true, message: "Removed from favorites" });
-  } catch (err) {
-    console.error("Remove favorite error:", err);
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Remove favorite error:", error);
     res.status(500).json({ message: "Server error" });
   }
 });

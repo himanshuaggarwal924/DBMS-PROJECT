@@ -1,3 +1,5 @@
+type ImageCategory = "city" | "place" | "attraction";
+
 // Array of diverse, beautiful city images from Unsplash
 export const POPULAR_CITY_IMAGES = [
   "https://images.unsplash.com/photo-1512343879784-a960bf40e7f2?w=800&q=80", // New York
@@ -37,7 +39,7 @@ export const ATTRACTION_IMAGES = [
 ];
 
 // Get a random image
-export const getRandomImage = (category: "city" | "place" | "attraction" = "city"): string => {
+export const getRandomImage = (category: ImageCategory = "city"): string => {
   const images = {
     city: POPULAR_CITY_IMAGES,
     place: PLACE_IMAGES,
@@ -48,7 +50,7 @@ export const getRandomImage = (category: "city" | "place" | "attraction" = "city
 };
 
 // Get seeded random image based on ID (consistent for same ID)
-export const getSeededImage = (id: number, category: "city" | "place" | "attraction" = "city"): string => {
+export const getSeededImage = (id: number, category: ImageCategory = "city"): string => {
   const images = {
     city: POPULAR_CITY_IMAGES,
     place: PLACE_IMAGES,
@@ -57,6 +59,69 @@ export const getSeededImage = (id: number, category: "city" | "place" | "attract
   const arr = images[category];
   return arr[id % arr.length];
 };
+
+function toSeedValue(seed: number | string | null | undefined) {
+  if (typeof seed === "number" && Number.isFinite(seed)) {
+    return Math.abs(Math.floor(seed));
+  }
+  if (typeof seed === "string" && seed.trim()) {
+    return Array.from(seed).reduce((total, char) => total + char.charCodeAt(0), 0);
+  }
+  return 0;
+}
+
+export function normalizeImageUrl(url?: string | null) {
+  if (!url) {
+    return undefined;
+  }
+
+  const trimmed = url.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  if (trimmed.startsWith("//")) {
+    return `https:${trimmed}`;
+  }
+
+  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith("data:image/")) {
+    return trimmed;
+  }
+
+  return undefined;
+}
+
+export function getSeededImageFromKey(seed: number | string | null | undefined, category: ImageCategory = "city") {
+  return getSeededImage(toSeedValue(seed), category);
+}
+
+export function getCityImageSources(city: {
+  id?: number | null;
+  name?: string | null;
+  imageUrl?: string | null;
+}) {
+  return [
+    normalizeImageUrl(city.imageUrl),
+    getSeededImageFromKey(city.id ?? city.name, "city"),
+  ].filter((value, index, array): value is string => Boolean(value) && array.indexOf(value) === index);
+}
+
+export function getPlaceImageSources(place: {
+  id?: number | string | null;
+  name?: string | null;
+  type?: string | null;
+  imageUrl?: string | null;
+  photos?: string[] | null;
+}) {
+  const category: ImageCategory = place.type === "attraction" ? "attraction" : "place";
+  const photoSources = (place.photos || []).map((photo) => normalizeImageUrl(photo));
+
+  return [
+    normalizeImageUrl(place.imageUrl),
+    ...photoSources,
+    getSeededImageFromKey(place.id ?? place.name, category),
+  ].filter((value, index, array): value is string => Boolean(value) && array.indexOf(value) === index);
+}
 
 // Track user view/search for personalization
 export const trackUserActivity = (_type: "search" | "view" | "favorite", targetId: number, targetType: "city" | "place") => {

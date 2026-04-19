@@ -1,84 +1,170 @@
-import mysql from "mysql2/promise";
 import fs from "fs";
 import path from "path";
+import type { RowDataPacket } from "mysql2";
+import { getConnection } from "./lib/mysql";
 
-const pool = mysql.createPool({
-  host: process.env.DB_HOST || "localhost",
-  user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "",
-  database: process.env.DB_NAME || "travel_planner",
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-});
+interface ColumnRow extends RowDataPacket {
+  COLUMN_NAME: string;
+}
 
-// Initialize database schema on startup
-export async function initializeDatabase() {
+interface TableRow extends RowDataPacket {
+  TABLE_NAME: string;
+}
+
+const CORE_TABLES = [
+  "expenses",
+  "user_searches",
+  "reviews",
+  "favorites",
+  "trip_places",
+  "trips",
+  "places",
+  "categories",
+  "cities",
+  "users",
+];
+
+function getSchemaPath() {
+  const candidates = [
+    path.join(__dirname, "schema.sql"),
+    path.join(process.cwd(), "server", "schema.sql"),
+    path.join(process.cwd(), "schema.sql"),
+  ];
+
+  const match = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!match) {
+    throw new Error("Unable to locate server/schema.sql");
+  }
+
+  return match;
+}
+
+async function tableHasColumn(tableName: string, columnName: string) {
+  const connection = await getConnection();
   try {
-    const connection = await pool.getConnection();
-    try {
-      // First, check if users table exists and has name column
-      const result = await connection.query(
-        "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'users' AND TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'name'"
-      );
-      
-      // If users table exists but doesn't have name column, drop and recreate all tables
-      if (result[0] && (result[0] as any[]).length === 0) {
-        console.log("⚠ Schema mismatch detected. Recreating database...");
-        try {
-          await connection.query("DROP DATABASE IF EXISTS travel_planner");
-          console.log("✓ Old database dropped");
-        } catch (err) {
-          console.error("Error dropping database:", err);
-        }
-      }
-      
-      // Now execute the schema
-      // Try multiple paths to find schema.sql
-      let schemaPath = path.join(__dirname, "schema.sql");
-      if (!fs.existsSync(schemaPath)) {
-        schemaPath = path.join(process.cwd(), "server", "schema.sql");
-      }
-      if (!fs.existsSync(schemaPath)) {
-        schemaPath = path.join(process.cwd(), "schema.sql");
-      }
-      
-      if (!fs.existsSync(schemaPath)) {
-        throw new Error(`schema.sql not found. Tried: ${schemaPath}`);
-      }
-      
-      const schemaSQL = fs.readFileSync(schemaPath, "utf8");
+    const [rows] = await connection.query<ColumnRow[]>(
+      `SELECT COLUMN_NAME
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = ?
+         AND COLUMN_NAME = ?`,
+      [tableName, columnName]
+    );
 
-      // Split SQL statements and execute them
-      const statements = schemaSQL
-        .split(";")
-        .map((stmt) => stmt.trim())
-        .filter((stmt) => stmt.length > 0);
-
-      for (let i = 0; i < statements.length; i++) {
-        try {
-          await connection.query(statements[i]);
-          console.log(`✓ Statement ${i + 1}/${statements.length} executed`);
-        } catch (error: unknown) {
-          const err = error as { code?: string; message?: string };
-          // Ignore "database already exists" and "table already exists" errors and duplicate key errors
-          if (
-            err.code !== "ER_DB_CREATE_EXISTS" && 
-            err.code !== "ER_TABLE_EXISTS_ERROR" &&
-            err.code !== "ER_DUP_KEYNAME"
-          ) {
-            console.error(`Error executing statement ${i + 1}:`, error);
-          }
-        }
-      }
-      console.log("✓ Database schema initialized successfully");
-    } finally {
-      connection.release();
-    }
-  } catch (error) {
-    console.error("Failed to initialize database:", error);
-    throw error;
+    return rows.length > 0;
+  } finally {
+    connection.release();
   }
 }
 
-export default pool;
+async function tableExists(tableName: string) {
+  const connection = await getConnection();
+  try {
+    const [rows] = await connection.query<TableRow[]>(
+      `SELECT TABLE_NAME
+       FROM INFORMATION_SCHEMA.TABLES
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = ?`,
+      [tableName]
+    );
+
+    return rows.length > 0;
+  } finally {
+    connection.release();
+  }
+}
+
+async function resetLegacySchema() {
+  const connection = await getConnection();
+  try {
+    await connection.query("SET FOREIGN_KEY_CHECKS = 0");
+    for (const tableName of CORE_TABLES) {
+      await connection.query(`DROP TABLE IF EXISTS ${tableName}`);
+    }
+    await connection.query("SET FOREIGN_KEY_CHECKS = 1");
+  } finally {
+    connection.release();
+  }
+}
+
+export async function initializeDatabase() {
+  const usersTableExists      = await tableExists("users").catch(() => false);
+  const placesTableExists     = await tableExists("places").catch(() => false);
+  const tripPlacesTableExists = await tableExists("trip_places").catch(() => false);
+
+  const usersHaveExpectedKey      = await tableHasColumn("users",       "user_id").catch(() => false);
+  const placesHaveExpectedKey     = await tableHasColumn("places",      "place_id").catch(() => false);
+  const tripPlacesHaveDayNumber   = await tableHasColumn("trip_places", "day_number").catch(() => false);
+
+  // Columns added in the current schema that older DB setups won't have.
+  // If any are missing the whole schema needs to be recreated.
+  const placesHaveApiPlaceId      = await tableHasColumn("places", "api_place_id").catch(() => false);
+  const placesHavePopularity      = await tableHasColumn("places", "popularity_score").catch(() => false);
+  const placesHaveImageUrl        = await tableHasColumn("places", "image_url").catch(() => false);
+
+  const needsReset =
+    (usersTableExists       && !usersHaveExpectedKey)    ||
+    (placesTableExists      && !placesHaveExpectedKey)   ||
+    (tripPlacesTableExists  && !tripPlacesHaveDayNumber) ||
+    // Old schema is missing columns that current queries depend on
+    (placesTableExists      && (!placesHaveApiPlaceId || !placesHavePopularity || !placesHaveImageUrl));
+
+  if (needsReset) {
+    console.log("[DB] Schema mismatch detected — recreating tables from schema.sql …");
+    await resetLegacySchema();
+  }
+
+  const schema = fs.readFileSync(getSchemaPath(), "utf8");
+  const statements = schema
+    .split(/;\s*(?:\r?\n|$)/)
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+
+  const connection = await getConnection();
+  try {
+    for (const statement of statements) {
+      try {
+        await connection.query(statement);
+      } catch (error) {
+        const typedError = error as { code?: string };
+        if (typedError.code !== "ER_DUP_KEYNAME" && typedError.code !== "ER_TABLE_EXISTS_ERROR") {
+          throw error;
+        }
+      }
+    }
+    await createStoredProcedures(connection);
+  } finally {
+    connection.release();
+  }
+}
+
+async function createStoredProcedures(connection: Awaited<ReturnType<typeof getConnection>>) {
+  try {
+    await connection.query("DROP PROCEDURE IF EXISTS GetBestValuePlaces");
+    await connection.query(`
+      CREATE PROCEDURE GetBestValuePlaces(IN p_city_id INT, IN p_limit INT)
+      BEGIN
+        SELECT
+          p.place_id,
+          p.name,
+          p.rating,
+          p.avg_cost,
+          c.name  AS category_name,
+          city.name AS city_name,
+          ROUND(p.rating / NULLIF(p.avg_cost, 0) * 1000, 2) AS value_score
+        FROM places p
+        JOIN categories c   ON c.category_id = p.category_id
+        JOIN cities city     ON city.city_id  = p.city_id
+        WHERE p.city_id = p_city_id
+          AND p.rating   IS NOT NULL
+          AND p.avg_cost IS NOT NULL
+          AND p.avg_cost > 0
+        ORDER BY value_score DESC
+        LIMIT p_limit;
+      END
+    `);
+    console.log("[DB] Stored procedure GetBestValuePlaces created");
+  } catch (err) {
+    console.warn("[DB] Failed to create stored procedure:", err instanceof Error ? err.message : err);
+  }
+}
