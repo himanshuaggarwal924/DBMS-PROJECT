@@ -174,6 +174,7 @@ DB_PASSWORD=yourpassword
 DB_NAME=travel_planner
 JWT_SECRET=your_jwt_secret
 GOOGLE_MAPS_API_KEY=your_google_maps_api_key
+```
 
 This project now uses live  API data for cities, hotels, restaurants, attractions, details, and reviews.
 If the API key is missing or invalid, live listing endpoints will not return data.
@@ -193,5 +194,3 @@ npm start
 ```
 
 ---
-
-
