@@ -135,15 +135,63 @@ This project demonstrates a wide range of DBMS concepts:
 
 ```bash
 git clone https://github.com/yourusername/project-name.git
-cd project-name
+```
+
+### 2. Install Dependencies
+
+Frontend
+
+```bash
 cd frontend
 npm install
-mysql -u root -p travel_planner < backend/sql/schema.sql
-mysql -u root -p travel_planner < backend/sql/stored_procedures.sql
+```
+
+Backend
+
+```bash
+cd backend
+npm install
+```
+
+### 3. Setup MySQL Database
+
+Create a MySQL database:
+
+```sql
+CREATE DATABASE travel_planner;
+```
+
+Update the database configuration in the backend.
+
+### 4. Configure Live API Access
+
+Create `server/.env` from `server/.env.example` and set:
+
+```bash
 DB_HOST=localhost
 DB_USER=root
 DB_PASSWORD=yourpassword
 DB_NAME=travel_planner
 JWT_SECRET=your_jwt_secret
 GOOGLE_MAPS_API_KEY=your_google_maps_api_key
+
+This project now uses live  API data for cities, hotels, restaurants, attractions, details, and reviews.
+If the API key is missing or invalid, live listing endpoints will not return data.
+
+### 5. Run the Application
+
+Start backend server:
+
+```bash
+npm start
+```
+
+Start frontend:
+
+```bash
+npm start
+```
+
+---
+
 
